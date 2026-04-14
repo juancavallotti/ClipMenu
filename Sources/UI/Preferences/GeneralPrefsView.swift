@@ -86,8 +86,9 @@ private struct ExcludeAppsEditor: View {
         VStack(alignment: .leading, spacing: 8) {
             List(selection: $selection) {
                 ForEach(settings.excludeApps, id: \.self) { app in
-                    Text(app["name"] ?? app["bundleIdentifier"] ?? "")
-                        .tag(app["bundleIdentifier"])
+                    let bundleIdentifier = app["bundleIdentifier"] ?? ""
+                    Text(app["name"] ?? bundleIdentifier)
+                        .tag(bundleIdentifier)
                 }
             }
             .frame(minHeight: 80)

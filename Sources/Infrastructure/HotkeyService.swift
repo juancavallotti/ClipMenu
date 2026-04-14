@@ -50,6 +50,16 @@ final class HotkeyService {
         KeyboardShortcuts.removeAllHandlers()
     }
 
+    @MainActor
+    func makeStatusMenu() -> NSMenu? {
+        popupMenu.statusMenu(using: AppRuntime.shared)
+    }
+
+    @MainActor
+    func presentMainMenuForTesting() {
+        popupMenu.show(using: AppRuntime.shared, kind: .main)
+    }
+
     // MARK: - Private
 
     private func ensureDefaultShortcutsIfMissing() {
@@ -85,6 +95,7 @@ private enum HotkeyMenuKind {
 private final class HotkeyPopupMenuPresenter: NSObject, NSMenuDelegate {
     private let actionTarget = HotkeyPopupActionTarget()
     private var targetAppForPaste: NSRunningApplication?
+    private var lastTargetApplication: NSRunningApplication?
     private lazy var anchorWindow: NSWindow = {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1, height: 1),
@@ -101,6 +112,21 @@ private final class HotkeyPopupMenuPresenter: NSObject, NSMenuDelegate {
         return window
     }()
 
+    override init() {
+        super.init()
+        updateLastTargetApplication(NSWorkspace.shared.frontmostApplication)
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(activeApplicationDidChange(_:)),
+            name: NSWorkspace.didActivateApplicationNotification,
+            object: nil
+        )
+    }
+
+    deinit {
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+    }
+
     @MainActor
     func show(using runtime: AppRuntime, kind: HotkeyMenuKind) {
         guard let context = runtime.modelContainer?.mainContext else {
@@ -115,7 +141,7 @@ private final class HotkeyPopupMenuPresenter: NSObject, NSMenuDelegate {
         menu.delegate = self
 
         let mouse = NSEvent.mouseLocation
-        anchorWindow.setFrameOrigin(mouse)
+        anchorWindow.setFrameOrigin(popupAnchorOrigin(for: menu, mouse: mouse))
         anchorWindow.orderFront(nil)
 
         if let contentView = anchorWindow.contentView {
@@ -128,16 +154,79 @@ private final class HotkeyPopupMenuPresenter: NSObject, NSMenuDelegate {
         HotkeyService.log.notice("Presented fallback NSMenu popup")
     }
 
+    private func popupAnchorOrigin(for menu: NSMenu, mouse: NSPoint) -> NSPoint {
+        guard let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) }) else {
+            return mouse
+        }
+
+        let screenMidY = screen.frame.midY
+        guard mouse.y < screenMidY else {
+            return mouse
+        }
+
+        let menuHeight = estimatedMenuHeight(for: menu)
+        let liftedY = min(mouse.y + menuHeight, screen.frame.maxY - 1)
+        return NSPoint(x: mouse.x, y: liftedY)
+    }
+
+    private func estimatedMenuHeight(for menu: NSMenu) -> CGFloat {
+        let visibleItems = menu.items.filter { !$0.isHidden }
+        guard !visibleItems.isEmpty else { return 0 }
+
+        let rowHeight: CGFloat = 22
+        let separatorHeight: CGFloat = 10
+
+        return visibleItems.reduce(CGFloat(0)) { total, item in
+            total + (item.isSeparatorItem ? separatorHeight : rowHeight)
+        }
+    }
+
+    @MainActor
+    func statusMenu(using runtime: AppRuntime) -> NSMenu? {
+        guard let context = runtime.modelContainer?.mainContext else {
+            HotkeyService.log.error("Status menu requested but modelContext is nil")
+            return nil
+        }
+
+        let menu = buildMenu(runtime: runtime, context: context, kind: .main)
+        actionTarget.runtime = runtime
+        targetAppForPaste = currentTargetApplication()
+        actionTarget.targetAppForPaste = targetAppForPaste
+        menu.delegate = self
+        return menu
+    }
+
     func menuDidClose(_ menu: NSMenu) {
         anchorWindow.orderOut(nil)
     }
 
     private func currentTargetApplication() -> NSRunningApplication? {
-        guard let frontmost = NSWorkspace.shared.frontmostApplication else { return nil }
-        if frontmost.processIdentifier == NSRunningApplication.current.processIdentifier {
-            return nil
+        if let frontmost = NSWorkspace.shared.frontmostApplication, isValidTargetApplication(frontmost) {
+            updateLastTargetApplication(frontmost)
+            return frontmost
         }
-        return frontmost
+
+        if let lastTargetApplication, !lastTargetApplication.isTerminated {
+            return lastTargetApplication
+        }
+
+        return nil
+    }
+
+    @objc private func activeApplicationDidChange(_ notification: Notification) {
+        updateLastTargetApplication(notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)
+    }
+
+    private func updateLastTargetApplication(_ application: NSRunningApplication?) {
+        guard let application, isValidTargetApplication(application) else { return }
+        lastTargetApplication = application
+    }
+
+    private func isValidTargetApplication(_ application: NSRunningApplication) -> Bool {
+        application.processIdentifier != NSRunningApplication.current.processIdentifier
+            && !application.isTerminated
+            && application.activationPolicy == .regular
+            && application.bundleIdentifier != nil
     }
 
     private func buildMenu(runtime: AppRuntime, context: ModelContext, kind: HotkeyMenuKind) -> NSMenu {
@@ -317,7 +406,7 @@ private final class HotkeyPopupMenuPresenter: NSObject, NSMenuDelegate {
             guard !snippets.isEmpty else { continue }
 
             let folderItem = NSMenuItem(title: folder.title, action: nil, keyEquivalent: "")
-            folderItem.image = NSImage(named: NSImage.folderName)
+            folderItem.image = folderMenuIcon(settings: settings)
             let submenu = NSMenu(title: folder.title)
             for snippet in snippets {
                 let item = NSMenuItem(title: snippet.title, action: #selector(HotkeyPopupActionTarget.selectSnippet(_:)), keyEquivalent: "")
@@ -350,12 +439,12 @@ private final class HotkeyPopupMenuPresenter: NSObject, NSMenuDelegate {
                                   keyEquivalent: "")
             item.target = actionTarget
             item.representedObject = clip
-            if settings.numericKeyEquivalents {
+            if shouldShowTrailingNumericShortcut(settings: settings) {
                 item.keyEquivalent = String(itemNumber % 10)
                 item.keyEquivalentModifierMask = []
             }
             if let thumbnail = thumbnailImage(for: clip, settings: settings) {
-                item.image = thumbnail
+                item.attributedTitle = imageClipTitle(title: item.title, thumbnail: thumbnail)
                 HotkeyService.log.debug("Attached inline popup thumbnail for clip index=\(idx, privacy: .public)")
             } else if clip.imageData != nil {
                 HotkeyService.log.debug("Inline popup clip has imageData but no thumbnail index=\(idx, privacy: .public) bytes=\(clip.imageData?.count ?? 0, privacy: .public)")
@@ -371,7 +460,7 @@ private final class HotkeyPopupMenuPresenter: NSObject, NSMenuDelegate {
             let start = inlineCount + groupIndex * perFolder + 1
             let end = start + group.count - 1
             let folderItem = NSMenuItem(title: "\(start) - \(end)", action: nil, keyEquivalent: "")
-            folderItem.image = NSImage(named: NSImage.folderName)
+            folderItem.image = folderMenuIcon(settings: settings)
 
             let submenu = NSMenu(title: folderItem.title)
             for (idx, clip) in group.enumerated() {
@@ -382,12 +471,12 @@ private final class HotkeyPopupMenuPresenter: NSObject, NSMenuDelegate {
                                       keyEquivalent: "")
                 item.target = actionTarget
                 item.representedObject = clip
-                if settings.numericKeyEquivalents {
+                if shouldShowTrailingNumericShortcut(settings: settings) {
                     item.keyEquivalent = String(itemNumber % 10)
                     item.keyEquivalentModifierMask = []
                 }
                 if let thumbnail = thumbnailImage(for: clip, settings: settings) {
-                    item.image = thumbnail
+                    item.attributedTitle = imageClipTitle(title: item.title, thumbnail: thumbnail)
                     HotkeyService.log.debug("Attached grouped popup thumbnail group=\(groupIndex, privacy: .public) idx=\(idx, privacy: .public)")
                 } else if clip.imageData != nil {
                     HotkeyService.log.debug("Grouped popup clip has imageData but no thumbnail group=\(groupIndex, privacy: .public) idx=\(idx, privacy: .public) bytes=\(clip.imageData?.count ?? 0, privacy: .public)")
@@ -406,6 +495,10 @@ private final class HotkeyPopupMenuPresenter: NSObject, NSMenuDelegate {
         }
         let n = index + 1
         return n > 10 ? n % 10 : n
+    }
+
+    private func shouldShowTrailingNumericShortcut(settings: ClipMenuSettings) -> Bool {
+        false
     }
 
     private func clipTitle(for clip: ClipEntry, settings: ClipMenuSettings, listNumber: Int) -> String {
@@ -427,15 +520,23 @@ private final class HotkeyPopupMenuPresenter: NSObject, NSMenuDelegate {
         if firstLine.count > maxLen {
             trimmed = String(firstLine.prefix(max(maxLen - 3, 0))) + "..."
         } else if firstLine.isEmpty, clip.imageData != nil {
-            trimmed = "(Image)"
+            trimmed = ""
         } else {
             trimmed = firstLine.isEmpty ? "(binary)" : firstLine
         }
 
         if settings.numberedMenuItems {
-            return "\(listNumber). \(trimmed)"
+            return trimmed.isEmpty ? "\(listNumber)." : "\(listNumber). \(trimmed)"
         }
         return trimmed
+    }
+
+    private func imageClipTitle(title: String, thumbnail: NSImage) -> NSAttributedString {
+        let result = NSMutableAttributedString(string: title.isEmpty ? "" : "\(title) ")
+        let attachment = NSTextAttachment()
+        attachment.image = thumbnail
+        result.append(NSAttributedString(attachment: attachment))
+        return result
     }
 
     private func thumbnailImage(for clip: ClipEntry, settings: ClipMenuSettings) -> NSImage? {
@@ -452,6 +553,12 @@ private final class HotkeyPopupMenuPresenter: NSObject, NSMenuDelegate {
         let targetSize = NSSize(width: CGFloat(settings.thumbnailWidth),
                                 height: CGFloat(settings.thumbnailHeight))
         return scaledImage(image, to: targetSize)
+    }
+
+    private func folderMenuIcon(settings: ClipMenuSettings) -> NSImage? {
+        guard let image = NSImage(named: NSImage.folderName) else { return nil }
+        let size = CGFloat(max(settings.menuIconSize, 1))
+        return scaledImage(image, to: NSSize(width: size, height: size))
     }
 
     private func scaledImage(_ image: NSImage, to size: NSSize) -> NSImage {
@@ -494,6 +601,10 @@ private final class HotkeyPopupMenuPresenter: NSObject, NSMenuDelegate {
 }
 
 private final class HotkeyPopupActionTarget: NSObject {
+    private static let menuDismissSettleDelay: UInt64 = 40_000_000
+    private static let reactivationSettleDelay: UInt64 = 40_000_000
+    private static let prePasteDelay: UInt64 = 70_000_000
+
     weak var runtime: AppRuntime?
     weak var targetAppForPaste: NSRunningApplication?
     private let pasteService = PasteService()
@@ -502,6 +613,7 @@ private final class HotkeyPopupActionTarget: NSObject {
     private func reactivateTargetAppIfNeeded() {
         guard let targetAppForPaste else { return }
         HotkeyService.log.debug("Re-activating target app pid=\(targetAppForPaste.processIdentifier, privacy: .public)")
+        NSApp.hide(nil)
         targetAppForPaste.activate(options: [])
     }
 
@@ -511,11 +623,13 @@ private final class HotkeyPopupActionTarget: NSObject {
         Task { @MainActor in
             reactivateTargetAppIfNeeded()
             // Allow menu interaction to settle before writing pasteboard.
-            try? await Task.sleep(nanoseconds: 160_000_000)
+            try? await Task.sleep(nanoseconds: Self.menuDismissSettleDelay)
             await runtime.clipsService.select(clip, pasteImmediately: false)
             if runtime.settings.autoPasteAfterSelection {
-                // Extra delay helps ensure front app is active before Cmd+V.
-                try? await Task.sleep(nanoseconds: 180_000_000)
+                // Give AppKit a beat to finish foreground activation.
+                try? await Task.sleep(nanoseconds: Self.reactivationSettleDelay)
+                reactivateTargetAppIfNeeded()
+                try? await Task.sleep(nanoseconds: Self.prePasteDelay)
                 await pasteService.paste()
             }
         }
@@ -526,10 +640,12 @@ private final class HotkeyPopupActionTarget: NSObject {
               let snippet = sender.representedObject as? Snippet else { return }
         Task { @MainActor in
             reactivateTargetAppIfNeeded()
-            try? await Task.sleep(nanoseconds: 160_000_000)
+            try? await Task.sleep(nanoseconds: Self.menuDismissSettleDelay)
             await runtime.clipsService.copyStringToPasteboard(snippet.content, pasteImmediately: false)
             if runtime.settings.autoPasteAfterSelection {
-                try? await Task.sleep(nanoseconds: 180_000_000)
+                try? await Task.sleep(nanoseconds: Self.reactivationSettleDelay)
+                reactivateTargetAppIfNeeded()
+                try? await Task.sleep(nanoseconds: Self.prePasteDelay)
                 await pasteService.paste()
             }
         }

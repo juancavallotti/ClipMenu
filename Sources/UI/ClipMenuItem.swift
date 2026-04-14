@@ -24,32 +24,21 @@ struct ClipMenuItem: View {
         }
         .help(tooltip)
         .modifier(NumericShortcut(number: listNumber % 10,
-                                  enabled: settings.numericKeyEquivalents))
+                                  enabled: false))
     }
 
     // MARK: - Label
 
     @ViewBuilder
     private var itemLabel: some View {
-        let thumb = settings.showImageInMenu ? thumbnail : nil
+        let rowTitleText = titleText
 
         HStack(spacing: 4) {
-            // Type icon
-            if thumb == nil, settings.showIconInMenu, let icon = typeIcon {
-                Image(nsImage: icon)
-                    .resizable()
-                    .frame(width: CGFloat(settings.menuIconSize),
-                           height: CGFloat(settings.menuIconSize))
-            }
-
-            // Image thumbnail
-            if let thumb {
-                Image(nsImage: thumb)
-            }
-
             // Title text
-            Text(titleText)
-                .font(itemFont)
+            if !rowTitleText.isEmpty {
+                Text(rowTitleText)
+                    .font(itemFont)
+            }
 
             // Type label badge
             if settings.showLabelsInMenu, let label = primaryTypeName {
@@ -63,20 +52,26 @@ struct ClipMenuItem: View {
     // MARK: - Title
 
     private var titleText: String {
-        var t = trimmedTitle
-        if settings.numberedMenuItems {
-            t = "\(listNumber). \(t)"
-        }
-        return t
+        let t = displayTitle
+        guard settings.numberedMenuItems else { return t }
+        return t.isEmpty ? numberText : "\(numberText) \(t)"
+    }
+
+    private var numberText: String {
+        "\(listNumber)."
+    }
+
+    private var displayTitle: String {
+        isImageOnly ? "" : trimmedTitle
+    }
+
+    private var isImageOnly: Bool {
+        entry.imageData != nil && textSource.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     /// Replicates `trimTitle()` from `legacy/Source/MenuController.m`.
     private var trimmedTitle: String {
-        let source = entry.stringValue
-            ?? entry.filenames?.first
-            ?? entry.urlStrings?.first
-            ?? ""
-        let stripped = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stripped = textSource.trimmingCharacters(in: .whitespacesAndNewlines)
         let firstLine: String
         if let nl = stripped.firstIndex(of: "\n") {
             firstLine = String(stripped[..<nl])
@@ -94,6 +89,13 @@ struct ClipMenuItem: View {
             return "(Image)"
         }
         return "(binary)"
+    }
+
+    private var textSource: String {
+        entry.stringValue
+            ?? entry.filenames?.first
+            ?? entry.urlStrings?.first
+            ?? ""
     }
 
     // MARK: - Visual properties

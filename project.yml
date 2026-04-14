@@ -56,6 +56,10 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
       configs:
         Debug:
+          CODE_SIGN_IDENTITY: "-"
+          CODE_SIGN_STYLE: Manual
+          DEVELOPMENT_TEAM: ""
+          PROVISIONING_PROFILE_SPECIFIER: ""
           DEBUG_INFORMATION_FORMAT: dwarf
           SWIFT_OPTIMIZATION_LEVEL: "-Onone"
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
@@ -63,6 +67,86 @@ targets:
           DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
           SWIFT_OPTIMIZATION_LEVEL: "-O"
           COPY_PHASE_STRIP: NO
+
+  ClipMenuTest:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+
+    sources:
+      - path: Sources
+      - path: Assets.xcassets
+        buildPhase: resources
+      - path: Resources/scripts
+        buildPhase: resources
+        type: folder
+
+    entitlements:
+      path: ClipMenu.entitlements
+      properties:
+        com.apple.security.automation.apple-events: true
+
+    dependencies:
+      - package: KeyboardShortcuts
+
+    settings:
+      base:
+        SWIFT_VERSION: "5.9"
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        PRODUCT_BUNDLE_IDENTIFIER: app.eetr.ClipMenuTest
+        PRODUCT_NAME: ClipMenuTest
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS: YES
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: WTWBLR82TY
+        ENABLE_HARDENED_RUNTIME: YES
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: ClipMenuTest
+        INFOPLIST_KEY_CFBundleIconName: AppIcon
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
+        INFOPLIST_KEY_LSUIElement: YES
+        INFOPLIST_KEY_NSPrincipalClass: NSApplication
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+      configs:
+        Debug:
+          CODE_SIGN_IDENTITY: "-"
+          CODE_SIGN_STYLE: Manual
+          DEVELOPMENT_TEAM: ""
+          PROVISIONING_PROFILE_SPECIFIER: ""
+          DEBUG_INFORMATION_FORMAT: dwarf
+          SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+        Release:
+          DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
+          SWIFT_OPTIMIZATION_LEVEL: "-O"
+          COPY_PHASE_STRIP: NO
+
+  ClipMenuUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    deploymentTarget: "14.0"
+
+    sources:
+      - path: UITests
+
+    dependencies:
+      - target: ClipMenuTest
+
+    settings:
+      base:
+        TEST_TARGET_NAME: ClipMenuTest
+        PRODUCT_BUNDLE_IDENTIFIER: app.eetr.ClipMenuUITests
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  ClipMenu:
+    build:
+      targets:
+        ClipMenu: all
+    test:
+      targets:
+        - ClipMenuUITests
 
 fileGroups:
   - project.yml
